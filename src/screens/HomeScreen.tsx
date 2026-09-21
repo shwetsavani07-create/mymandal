@@ -14,6 +14,7 @@ type RootStackParamList = {
     Home: undefined;
     Members: undefined;
     AddMember: undefined;
+    MonthlyPayments: undefined;
 };
 
 type HomeScreenNavigationProp =
@@ -138,7 +139,10 @@ export default function HomeScreen() {
             {/* Main Navigation */}
             <Text style={styles.sectionTitle}>Manage</Text>
 
-            <TouchableOpacity style={styles.navigationButton}>
+            <TouchableOpacity
+                style={styles.navigationButton}
+                onPress={() => navigation.navigate("MonthlyPayments")}
+            >
                 <Text style={styles.navigationText}>
                     Monthly Payments
                 </Text>

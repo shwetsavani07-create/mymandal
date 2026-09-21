@@ -16,6 +16,8 @@ import HomeScreen from "./src/screens/HomeScreen";
 import MembersScreen from "./src/screens/MembersScreen";
 import AddMemberScreen from "./src/screens/AddMemberScreen";
 import EditMemberScreen from "./src/screens/EditMemberScreen";
+import MonthlyPaymentsScreen from "./src/screens/MonthlyPaymentsScreen";
+import PaymentDetailsScreen from "./src/screens/PaymentDetailsScreen";
 
 type RootStackParamList = {
     Home: undefined;
@@ -23,6 +25,12 @@ type RootStackParamList = {
     AddMember: undefined;
     EditMember: {
         memberId: string;
+    };
+    MonthlyPayments: undefined;
+    PaymentDetails: {
+        obligationId: string;
+        memberName: string;
+        originalInstallment: number;
     };
 };
 
@@ -104,6 +112,14 @@ export default function App() {
 
                 <Stack.Screen name="EditMember">
                     {() => <EditMemberScreen />}
+                </Stack.Screen>
+
+                <Stack.Screen name="MonthlyPayments">
+                    {() => <MonthlyPaymentsScreen />}
+                </Stack.Screen>
+
+                <Stack.Screen name="PaymentDetails">
+                    {() => <PaymentDetailsScreen />}
                 </Stack.Screen>
 
             </Stack.Navigator>
