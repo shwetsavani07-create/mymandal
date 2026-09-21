@@ -11,9 +11,16 @@ import {
     View,
 } from "react-native";
 
-import { useNavigation, useRoute } from "@react-navigation/native";
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import type { RouteProp } from "@react-navigation/native";
+import {
+    useNavigation,
+    useRoute,
+} from "@react-navigation/native";
+import type {
+    NativeStackNavigationProp,
+} from "@react-navigation/native-stack";
+import type {
+    RouteProp,
+} from "@react-navigation/native";
 
 import {
     getMembers,
@@ -30,10 +37,16 @@ type RootStackParamList = {
 };
 
 type EditMemberNavigationProp =
-    NativeStackNavigationProp<RootStackParamList, "EditMember">;
+    NativeStackNavigationProp<
+        RootStackParamList,
+        "EditMember"
+    >;
 
 type EditMemberRouteProp =
-    RouteProp<RootStackParamList, "EditMember">;
+    RouteProp<
+        RootStackParamList,
+        "EditMember"
+    >;
 
 export default function EditMemberScreen() {
     const navigation =
@@ -49,8 +62,16 @@ export default function EditMemberScreen() {
     const [monthlyInstallment, setMonthlyInstallment] =
         useState("");
 
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
+    const [
+        originalInstallment,
+        setOriginalInstallment,
+    ] = useState<number | null>(null);
+
+    const [loading, setLoading] =
+        useState(true);
+
+    const [saving, setSaving] =
+        useState(false);
 
     React.useEffect(() => {
         loadMember();
@@ -61,7 +82,8 @@ export default function EditMemberScreen() {
             const members = await getMembers();
 
             const member = members.find(
-                (item) => item.id === memberId
+                (item) =>
+                    item.id === memberId
             );
 
             if (!member) {
@@ -71,7 +93,8 @@ export default function EditMemberScreen() {
                     [
                         {
                             text: "OK",
-                            onPress: () => navigation.goBack(),
+                            onPress: () =>
+                                navigation.goBack(),
                         },
                     ]
                 );
@@ -81,11 +104,22 @@ export default function EditMemberScreen() {
 
             setName(member.name);
             setMobile(member.mobile);
+
             setMonthlyInstallment(
-                String(member.monthlyInstallment)
+                String(
+                    member.pendingMonthlyInstallment ??
+                    member.monthlyInstallment
+                )
+            );
+
+            setOriginalInstallment(
+                member.monthlyInstallment
             );
         } catch (error) {
-            console.error("Load member error:", error);
+            console.error(
+                "Load member error:",
+                error
+            );
 
             Alert.alert(
                 "Error",
@@ -97,8 +131,12 @@ export default function EditMemberScreen() {
     };
 
     const handleSave = async () => {
-        const trimmedName = name.trim();
-        const trimmedMobile = mobile.trim();
+        const trimmedName =
+            name.trim();
+
+        const trimmedMobile =
+            mobile.trim();
+
         const trimmedInstallment =
             monthlyInstallment.trim();
 
@@ -126,7 +164,8 @@ export default function EditMemberScreen() {
             return;
         }
 
-        const installment = Number(trimmedInstallment);
+        const installment =
+            Number(trimmedInstallment);
 
         if (
             !Number.isFinite(installment) ||
@@ -139,25 +178,51 @@ export default function EditMemberScreen() {
             return;
         }
 
+        const installmentChanged =
+            originalInstallment !== null &&
+            installment !==
+            originalInstallment;
+
         try {
             setSaving(true);
 
-            await updateMember(memberId, {
-                name: trimmedName,
-                mobile: trimmedMobile,
-                monthlyInstallment: installment,
-            });
-
-            Alert.alert(
-                "Member Updated",
-                `${trimmedName} has been updated successfully.`,
-                [
-                    {
-                        text: "OK",
-                        onPress: () => navigation.goBack(),
-                    },
-                ]
+            await updateMember(
+                memberId,
+                {
+                    name: trimmedName,
+                    mobile: trimmedMobile,
+                    monthlyInstallment:
+                    installment,
+                }
             );
+
+            if (installmentChanged) {
+                Alert.alert(
+                    "Member Updated",
+                    `${trimmedName} has been updated successfully.\n\nThe new monthly installment of ₹${installment.toLocaleString(
+                        "en-IN"
+                    )} will start from next month. The current month's installment will remain unchanged.`,
+                    [
+                        {
+                            text: "OK",
+                            onPress: () =>
+                                navigation.goBack(),
+                        },
+                    ]
+                );
+            } else {
+                Alert.alert(
+                    "Member Updated",
+                    `${trimmedName} has been updated successfully.`,
+                    [
+                        {
+                            text: "OK",
+                            onPress: () =>
+                                navigation.goBack(),
+                        },
+                    ]
+                );
+            }
         } catch (error) {
             console.error(
                 "Update member error:",
@@ -175,8 +240,16 @@ export default function EditMemberScreen() {
 
     if (loading) {
         return (
-            <View style={styles.loadingContainer}>
-                <Text style={styles.loadingText}>
+            <View
+                style={
+                    styles.loadingContainer
+                }
+            >
+                <Text
+                    style={
+                        styles.loadingText
+                    }
+                >
                     Loading member...
                 </Text>
             </View>
@@ -193,20 +266,26 @@ export default function EditMemberScreen() {
             }
         >
             <ScrollView
-                contentContainerStyle={styles.content}
+                contentContainerStyle={
+                    styles.content
+                }
                 keyboardShouldPersistTaps="handled"
             >
                 <Text style={styles.title}>
                     Edit Member
                 </Text>
 
-                <Text style={styles.subtitle}>
+                <Text
+                    style={styles.subtitle}
+                >
                     Update the member details below.
                 </Text>
 
                 {/* Name */}
                 <View style={styles.field}>
-                    <Text style={styles.label}>
+                    <Text
+                        style={styles.label}
+                    >
                         Name
                     </Text>
 
@@ -222,7 +301,9 @@ export default function EditMemberScreen() {
 
                 {/* Mobile */}
                 <View style={styles.field}>
-                    <Text style={styles.label}>
+                    <Text
+                        style={styles.label}
+                    >
                         Mobile Number
                     </Text>
 
@@ -238,12 +319,16 @@ export default function EditMemberScreen() {
 
                 {/* Monthly Installment */}
                 <View style={styles.field}>
-                    <Text style={styles.label}>
+                    <Text
+                        style={styles.label}
+                    >
                         Monthly Installment
                     </Text>
 
                     <TextInput
-                        value={monthlyInstallment}
+                        value={
+                            monthlyInstallment
+                        }
                         onChangeText={
                             setMonthlyInstallment
                         }
@@ -252,6 +337,25 @@ export default function EditMemberScreen() {
                         style={styles.input}
                         keyboardType="numeric"
                     />
+
+                    {originalInstallment !==
+                        null &&
+                        Number(
+                            monthlyInstallment
+                        ) !==
+                        originalInstallment && (
+                            <Text
+                                style={
+                                    styles.helperText
+                                }
+                            >
+                                The new installment will
+                                start from next month.
+                                The current month's
+                                installment will remain
+                                unchanged.
+                            </Text>
+                        )}
                 </View>
 
                 <TouchableOpacity
@@ -263,7 +367,11 @@ export default function EditMemberScreen() {
                     onPress={handleSave}
                     disabled={saving}
                 >
-                    <Text style={styles.saveButtonText}>
+                    <Text
+                        style={
+                            styles.saveButtonText
+                        }
+                    >
                         {saving
                             ? "Saving..."
                             : "Save Changes"}
@@ -319,6 +427,13 @@ const styles = StyleSheet.create({
         paddingHorizontal: 15,
         fontSize: 16,
         color: "#111827",
+    },
+
+    helperText: {
+        marginTop: 8,
+        fontSize: 13,
+        lineHeight: 19,
+        color: "#6B7280",
     },
 
     saveButton: {

@@ -11,8 +11,12 @@ import {
 import {
     getMembers,
     setMemberActive,
+    deleteMember,
     type Member,
 } from "../database/memberStorage";
+
+import { deleteMonthlyObligationsForMember } from "../database/monthlyObligationStorage";
+import { deletePaymentsForMember } from "../database/paymentStorage";
 
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -37,8 +41,12 @@ export default function MembersScreen() {
     const [showInactive, setShowInactive] = useState(false);
 
     const loadMembers = async () => {
-        const data = await getMembers();
-        setMembers(data);
+        try {
+            const data = await getMembers();
+            setMembers(data);
+        } catch (error) {
+            console.error("Load members error:", error);
+        }
     };
 
     useEffect(() => {
@@ -69,12 +77,72 @@ export default function MembersScreen() {
                         ? "Mark Inactive"
                         : "Reactivate",
                     onPress: async () => {
-                        await setMemberActive(
-                            member.id,
-                            !member.isActive
-                        );
+                        try {
+                            await setMemberActive(
+                                member.id,
+                                !member.isActive
+                            );
 
-                        await loadMembers();
+                            await loadMembers();
+                        } catch (error) {
+                            console.error(
+                                "Toggle member status error:",
+                                error
+                            );
+
+                            Alert.alert(
+                                "Error",
+                                "Unable to update member status."
+                            );
+                        }
+                    },
+                },
+            ]
+        );
+    };
+
+    const handleDeletePermanently = (member: Member) => {
+        Alert.alert(
+            "Delete Member Permanently?",
+            `This will permanently delete ${member.name} and all of their financial records, including payment records and monthly records.\n\nTheir collected amount will also be removed from the Mandal totals.\n\nThis action cannot be undone.`,
+            [
+                {
+                    text: "Cancel",
+                    style: "cancel",
+                },
+                {
+                    text: "Delete Permanently",
+                    style: "destructive",
+                    onPress: async () => {
+                        try {
+                            // Delete payment records first.
+                            await deletePaymentsForMember(member.id);
+
+                            // Delete monthly financial records.
+                            await deleteMonthlyObligationsForMember(
+                                member.id
+                            );
+
+                            // Finally delete the member record.
+                            await deleteMember(member.id);
+
+                            await loadMembers();
+
+                            Alert.alert(
+                                "Member Deleted",
+                                `${member.name} and their financial records have been permanently deleted.`
+                            );
+                        } catch (error) {
+                            console.error(
+                                "Permanent member deletion error:",
+                                error
+                            );
+
+                            Alert.alert(
+                                "Error",
+                                "Unable to permanently delete this member. Please try again."
+                            );
+                        }
                     },
                 },
             ]
@@ -134,6 +202,18 @@ export default function MembersScreen() {
                         {item.isActive
                             ? "Inactive"
                             : "Reactivate"}
+                    </Text>
+                </TouchableOpacity>
+
+                {/* Permanent Delete */}
+                <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() =>
+                        handleDeletePermanently(item)
+                    }
+                >
+                    <Text style={styles.deleteText}>
+                        Delete Permanently
                     </Text>
                 </TouchableOpacity>
             </View>
@@ -381,6 +461,19 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "600",
         color: "#374151",
+    },
+
+    deleteButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+        borderRadius: 8,
+        backgroundColor: "#FEE2E2",
+    },
+
+    deleteText: {
+        fontSize: 12,
+        fontWeight: "600",
+        color: "#DC2626",
     },
 
     emptyContainer: {

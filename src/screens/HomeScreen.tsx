@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
 import {
     ScrollView,
     StyleSheet,
@@ -7,160 +7,586 @@ import {
     View,
 } from "react-native";
 
-import { useNavigation } from "@react-navigation/native";
-import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import {
+    useFocusEffect,
+    useNavigation,
+} from "@react-navigation/native";
+import type {
+    NativeStackNavigationProp,
+} from "@react-navigation/native-stack";
+
+import {
+    getMembers,
+    getInstallmentForMonth,
+} from "../database/memberStorage";
+
+import {
+    createMonthlyObligation,
+    getMonthlyObligations,
+    type MonthlyObligation,
+} from "../database/monthlyObligationStorage";
+
+import {
+    getPayments,
+    type Payment,
+} from "../database/paymentStorage";
 
 type RootStackParamList = {
     Home: undefined;
     Members: undefined;
     AddMember: undefined;
     MonthlyPayments: undefined;
+    History: undefined;
 };
 
 type HomeScreenNavigationProp =
-    NativeStackNavigationProp<RootStackParamList, "Home">;
+    NativeStackNavigationProp<
+        RootStackParamList,
+        "Home"
+    >;
+
+type DashboardData = {
+    memberCount: number;
+    paidCount: number;
+    pendingCount: number;
+    originalInstallments: number;
+    penalty: number;
+    collected: number;
+    pendingAmount: number;
+    oldOverdue: number;
+};
 
 export default function HomeScreen() {
-    const navigation = useNavigation<HomeScreenNavigationProp>();
+    const navigation =
+        useNavigation<HomeScreenNavigationProp>();
+
+    const [dashboard, setDashboard] =
+        useState<DashboardData>({
+            memberCount: 0,
+            paidCount: 0,
+            pendingCount: 0,
+            originalInstallments: 0,
+            penalty: 0,
+            collected: 0,
+            pendingAmount: 0,
+            oldOverdue: 0,
+        });
+
+    const [loading, setLoading] =
+        useState(true);
+
+    const now = new Date();
+    const currentYear =
+        now.getFullYear();
+    const currentMonth =
+        now.getMonth() + 1;
+
+    const loadDashboard = async () => {
+        try {
+            setLoading(true);
+
+            const members =
+                await getMembers();
+
+            const activeMembers =
+                members.filter(
+                    (member) =>
+                        member.isActive
+                );
+
+            /*
+             * Ensure the current month's
+             * obligations exist using the
+             * installment effective for this
+             * specific month.
+             */
+            for (const member of activeMembers) {
+                const installmentForMonth =
+                    await getInstallmentForMonth(
+                        member.id,
+                        currentYear,
+                        currentMonth
+                    );
+
+                await createMonthlyObligation(
+                    member.id,
+                    currentYear,
+                    currentMonth,
+                    installmentForMonth
+                );
+            }
+
+            const allObligations =
+                await getMonthlyObligations();
+
+            const allPayments =
+                await getPayments();
+
+            const currentObligations =
+                allObligations.filter(
+                    (obligation) =>
+                        obligation.year ===
+                        currentYear &&
+                        obligation.month ===
+                        currentMonth &&
+                        activeMembers.some(
+                            (member) =>
+                                member.id ===
+                                obligation.memberId
+                        )
+                );
+
+            const currentPayments =
+                allPayments.filter(
+                    (payment) =>
+                        payment.year ===
+                        currentYear &&
+                        payment.month ===
+                        currentMonth &&
+                        activeMembers.some(
+                            (member) =>
+                                member.id ===
+                                payment.memberId
+                        )
+                );
+
+            const paidByObligation =
+                new Map<string, number>();
+
+            currentPayments.forEach(
+                (payment: Payment) => {
+                    const existing =
+                        paidByObligation.get(
+                            payment.obligationId
+                        ) ?? 0;
+
+                    paidByObligation.set(
+                        payment.obligationId,
+                        existing +
+                        payment.actualCollectedAmount
+                    );
+                }
+            );
+
+            let originalInstallments = 0;
+            let totalPenalty = 0;
+            let collected = 0;
+            let pendingAmount = 0;
+            let paidCount = 0;
+            let pendingCount = 0;
+
+            currentObligations.forEach(
+                (
+                    obligation: MonthlyObligation
+                ) => {
+                    originalInstallments +=
+                        obligation.originalInstallment;
+
+                    totalPenalty +=
+                        obligation.penalty;
+
+                    const paid =
+                        paidByObligation.get(
+                            obligation.id
+                        ) ?? 0;
+
+                    collected += paid;
+
+                    const remaining =
+                        Math.max(
+                            obligation.currentAmountDue -
+                            paid,
+                            0
+                        );
+
+                    pendingAmount +=
+                        remaining;
+
+                    if (remaining <= 0) {
+                        paidCount += 1;
+                    } else {
+                        pendingCount += 1;
+                    }
+                }
+            );
+
+            const totalPaidByObligation =
+                new Map<string, number>();
+
+            allPayments.forEach(
+                (payment: Payment) => {
+                    const existing =
+                        totalPaidByObligation.get(
+                            payment.obligationId
+                        ) ?? 0;
+
+                    totalPaidByObligation.set(
+                        payment.obligationId,
+                        existing +
+                        payment.actualCollectedAmount
+                    );
+                }
+            );
+
+            let calculatedOldOverdue = 0;
+
+            allObligations.forEach(
+                (
+                    obligation: MonthlyObligation
+                ) => {
+                    const isPreviousMonth =
+                        obligation.year <
+                        currentYear ||
+                        (
+                            obligation.year ===
+                            currentYear &&
+                            obligation.month <
+                            currentMonth
+                        );
+
+                    if (!isPreviousMonth) {
+                        return;
+                    }
+
+                    const paid =
+                        totalPaidByObligation.get(
+                            obligation.id
+                        ) ?? 0;
+
+                    const remaining =
+                        Math.max(
+                            obligation.currentAmountDue -
+                            paid,
+                            0
+                        );
+
+                    calculatedOldOverdue +=
+                        remaining;
+                }
+            );
+
+            setDashboard({
+                memberCount:
+                activeMembers.length,
+                paidCount,
+                pendingCount,
+                originalInstallments,
+                penalty:
+                totalPenalty,
+                collected,
+                pendingAmount,
+                oldOverdue:
+                calculatedOldOverdue,
+            });
+        } catch (error) {
+            console.error(
+                "Load dashboard error:",
+                error
+            );
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useFocusEffect(
+        useCallback(() => {
+            loadDashboard();
+        }, [])
+    );
+
+    const formatCurrency =
+        (amount: number) =>
+            `₹${amount.toLocaleString(
+                "en-IN"
+            )}`;
+
+    const monthName =
+        new Date(
+            currentYear,
+            currentMonth - 1,
+            1
+        ).toLocaleString("en-IN", {
+            month: "long",
+            year: "numeric",
+        });
 
     return (
         <ScrollView
             style={styles.container}
-            contentContainerStyle={styles.content}
+            contentContainerStyle={
+                styles.content
+            }
         >
             {/* Header */}
             <View style={styles.header}>
                 <View>
-                    <Text style={styles.title}>My Mandal</Text>
-                    <Text style={styles.month}>September 2026</Text>
+                    <Text style={styles.title}>
+                        My Mandal
+                    </Text>
+
+                    <Text style={styles.month}>
+                        {monthName}
+                    </Text>
                 </View>
 
-                <TouchableOpacity style={styles.menuButton}>
-                    <Text style={styles.menuText}>⋮</Text>
+                <TouchableOpacity
+                    style={styles.menuButton}
+                >
+                    <Text
+                        style={styles.menuText}
+                    >
+                        ⋮
+                    </Text>
                 </TouchableOpacity>
             </View>
 
             {/* Member Summary */}
             <View style={styles.memberRow}>
                 <View style={styles.memberCard}>
-                    <Text style={styles.cardLabel}>Members</Text>
-                    <Text style={styles.cardValue}>20</Text>
+                    <Text
+                        style={styles.cardLabel}
+                    >
+                        Members
+                    </Text>
+
+                    <Text
+                        style={styles.cardValue}
+                    >
+                        {loading
+                            ? "..."
+                            : dashboard.memberCount}
+                    </Text>
                 </View>
 
                 <View style={styles.memberCard}>
-                    <Text style={styles.cardLabel}>Paid</Text>
-                    <Text style={styles.cardValue}>15</Text>
+                    <Text
+                        style={styles.cardLabel}
+                    >
+                        Paid
+                    </Text>
+
+                    <Text
+                        style={styles.cardValue}
+                    >
+                        {loading
+                            ? "..."
+                            : dashboard.paidCount}
+                    </Text>
                 </View>
 
                 <View style={styles.memberCard}>
-                    <Text style={styles.cardLabel}>Pending</Text>
-                    <Text style={styles.cardValue}>5</Text>
+                    <Text
+                        style={styles.cardLabel}
+                    >
+                        Pending
+                    </Text>
+
+                    <Text
+                        style={styles.cardValue}
+                    >
+                        {loading
+                            ? "..."
+                            : dashboard.pendingCount}
+                    </Text>
                 </View>
             </View>
 
             {/* Financial Summary */}
-            <Text style={styles.sectionTitle}>This Month</Text>
+            <Text style={styles.sectionTitle}>
+                This Month
+            </Text>
 
             <View style={styles.financeCard}>
-                <Text style={styles.financeLabel}>
+                <Text
+                    style={styles.financeLabel}
+                >
                     Original Installments
                 </Text>
 
-                <Text style={styles.financeAmount}>
-                    ₹10,000
+                <Text
+                    style={styles.financeAmount}
+                >
+                    {loading
+                        ? "..."
+                        : formatCurrency(
+                            dashboard.originalInstallments
+                        )}
                 </Text>
             </View>
 
             <View style={styles.financeCard}>
-                <Text style={styles.financeLabel}>
-                    Current Amount Due
+                <Text
+                    style={styles.financeLabel}
+                >
+                    Penalty
                 </Text>
 
-                <Text style={styles.financeAmount}>
-                    ₹10,500
+                <Text
+                    style={styles.financeAmount}
+                >
+                    {loading
+                        ? "..."
+                        : formatCurrency(
+                            dashboard.penalty
+                        )}
                 </Text>
             </View>
 
             <View style={styles.financeCard}>
-                <Text style={styles.financeLabel}>
+                <Text
+                    style={styles.financeLabel}
+                >
                     Collected
                 </Text>
 
-                <Text style={styles.financeAmount}>
-                    ₹8,500
+                <Text
+                    style={styles.financeAmount}
+                >
+                    {loading
+                        ? "..."
+                        : formatCurrency(
+                            dashboard.collected
+                        )}
                 </Text>
             </View>
 
             <View style={styles.financeCard}>
-                <Text style={styles.financeLabel}>
+                <Text
+                    style={styles.financeLabel}
+                >
                     Pending
                 </Text>
 
-                <Text style={styles.financeAmount}>
-                    ₹2,000
+                <Text
+                    style={styles.financeAmount}
+                >
+                    {loading
+                        ? "..."
+                        : formatCurrency(
+                            dashboard.pendingAmount
+                        )}
                 </Text>
             </View>
 
             {/* Old Overdue */}
-            <View style={styles.overdueSection}>
-                <Text style={styles.overdueTitle}>
+            <View
+                style={styles.overdueSection}
+            >
+                <Text
+                    style={styles.overdueTitle}
+                >
                     Old Overdue
                 </Text>
 
-                <Text style={styles.overdueAmount}>
-                    ₹800
+                <Text
+                    style={styles.overdueAmount}
+                >
+                    {loading
+                        ? "..."
+                        : formatCurrency(
+                            dashboard.oldOverdue
+                        )}
                 </Text>
 
-                <Text style={styles.overdueDescription}>
-                    Outstanding from previous months
+                <Text
+                    style={
+                        styles.overdueDescription
+                    }
+                >
+                    Outstanding from previous
+                    months
                 </Text>
             </View>
 
             {/* Quick Actions */}
-            <Text style={styles.sectionTitle}>Quick Actions</Text>
+            <Text style={styles.sectionTitle}>
+                Quick Actions
+            </Text>
 
             <View style={styles.actionRow}>
-                <TouchableOpacity style={styles.actionButton}>
-                    <Text style={styles.actionText}>
+                <TouchableOpacity
+                    style={styles.actionButton}
+                    onPress={() =>
+                        navigation.navigate(
+                            "MonthlyPayments"
+                        )
+                    }
+                >
+                    <Text
+                        style={styles.actionText}
+                    >
                         Record Payment
                     </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                     style={styles.actionButton}
-                    onPress={() => navigation.navigate("AddMember")}
+                    onPress={() =>
+                        navigation.navigate(
+                            "AddMember"
+                        )
+                    }
                 >
-                    <Text style={styles.actionText}>
+                    <Text
+                        style={styles.actionText}
+                    >
                         Add Member
                     </Text>
                 </TouchableOpacity>
             </View>
 
             {/* Main Navigation */}
-            <Text style={styles.sectionTitle}>Manage</Text>
+            <Text style={styles.sectionTitle}>
+                Manage
+            </Text>
 
             <TouchableOpacity
                 style={styles.navigationButton}
-                onPress={() => navigation.navigate("MonthlyPayments")}
+                onPress={() =>
+                    navigation.navigate(
+                        "MonthlyPayments"
+                    )
+                }
             >
-                <Text style={styles.navigationText}>
+                <Text
+                    style={
+                        styles.navigationText
+                    }
+                >
                     Monthly Payments
                 </Text>
             </TouchableOpacity>
 
-            {/* Members */}
             <TouchableOpacity
                 style={styles.navigationButton}
-                onPress={() => navigation.navigate("Members")}
+                onPress={() =>
+                    navigation.navigate(
+                        "Members"
+                    )
+                }
             >
-                <Text style={styles.navigationText}>
+                <Text
+                    style={
+                        styles.navigationText
+                    }
+                >
                     Members
                 </Text>
             </TouchableOpacity>
 
-            {/* History */}
-            <TouchableOpacity style={styles.navigationButton}>
-                <Text style={styles.navigationText}>
+            <TouchableOpacity
+                style={styles.navigationButton}
+                onPress={() =>
+                    navigation.navigate(
+                        "History"
+                    )
+                }
+            >
+                <Text
+                    style={
+                        styles.navigationText
+                    }
+                >
                     History
                 </Text>
             </TouchableOpacity>

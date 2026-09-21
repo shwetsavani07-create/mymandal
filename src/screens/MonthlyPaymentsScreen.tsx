@@ -7,9 +7,11 @@ import {
     ActivityIndicator,
     Alert,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     ScrollView,
     StyleSheet,
+    Switch,
     Text,
     TextInput,
     TouchableOpacity,
@@ -27,6 +29,7 @@ import {
 
 import {
     getMembers,
+    getInstallmentForMonth,
     Member,
 } from "../database/memberStorage";
 
@@ -39,6 +42,7 @@ import {
 
 import {
     addPayment,
+    deletePayment,
     getPaymentsForObligation,
     getTotalPaidForObligation,
 } from "../database/paymentStorage";
@@ -94,8 +98,20 @@ export default function MonthlyPaymentsScreen() {
     const [paymentAmount, setPaymentAmount] =
         useState("");
 
+    const [paymentDate, setPaymentDate] =
+        useState("");
+
+    const [paymentTime, setPaymentTime] =
+        useState("");
+
     const [paymentModalVisible, setPaymentModalVisible] =
         useState(false);
+
+    const [manualOverride, setManualOverride] =
+        useState(false);
+
+    const [overrideReason, setOverrideReason] =
+        useState("");
 
     const [currentDate] =
         useState(() => new Date());
@@ -115,95 +131,292 @@ export default function MonthlyPaymentsScreen() {
         );
 
     /*
-     * Rebuild the monthly obligation from the payment records.
-     *
-     * This is important for old records that were entered using today's
-     * date by mistake. The payment's actual paidAt date is the source
-     * used to calculate the month's due amount.
-     *
-     * For multiple partial payments, the latest actual payment date is
-     * used as the month's current/final penalty reference. The penalty
-     * is still calculated on the full original installment only once.
+     * Convert a Date into the app's editable
+     * DD/MM/YYYY and HH:MM format.
      */
-    const reconcileMonthlyObligation = async (
-        obligation: MonthlyObligation
-    ): Promise<MonthlyObligation> => {
-        const payments =
-            await getPaymentsForObligation(
-                obligation.id
-            );
+    const formatDateForInput = (
+        date: Date
+    ) => {
+        const day =
+            String(date.getDate())
+                .padStart(2, "0");
 
-        if (payments.length === 0) {
-            return obligation;
+        const month =
+            String(date.getMonth() + 1)
+                .padStart(2, "0");
+
+        const year =
+            date.getFullYear();
+
+        return `${day}/${month}/${year}`;
+    };
+
+    const formatTimeForInput = (
+        date: Date
+    ) => {
+        const hours =
+            String(date.getHours())
+                .padStart(2, "0");
+
+        const minutes =
+            String(date.getMinutes())
+                .padStart(2, "0");
+
+        return `${hours}:${minutes}`;
+    };
+
+    /*
+     * Convert the selected DD/MM/YYYY + HH:MM
+     * into a real Date object.
+     */
+    const parsePaymentDateTime = (): Date | null => {
+        const dateParts =
+            paymentDate
+                .trim()
+                .split("/");
+
+        const timeParts =
+            paymentTime
+                .trim()
+                .split(":");
+
+        if (
+            dateParts.length !== 3 ||
+            timeParts.length !== 2
+        ) {
+            return null;
         }
 
-        const sortedPayments =
-            [...payments].sort(
-                (a, b) =>
-                    new Date(b.paidAt).getTime() -
-                    new Date(a.paidAt).getTime()
-            );
+        const day =
+            Number(dateParts[0]);
 
-        const latestPayment =
-            sortedPayments[0];
+        const selectedMonth =
+            Number(dateParts[1]);
 
-        const paymentDate =
-            new Date(latestPayment.paidAt);
+        const selectedYear =
+            Number(dateParts[2]);
 
-        const calculation =
-            calculatePaymentAmount(
-                obligation.originalInstallment,
-                paymentDate
-            );
+        const hours =
+            Number(timeParts[0]);
 
-        const totalPaid =
-            payments.reduce(
-                (total, payment) =>
-                    total +
-                    payment.actualCollectedAmount,
+        const minutes =
+            Number(timeParts[1]);
+
+        if (
+            !Number.isInteger(day) ||
+            !Number.isInteger(selectedMonth) ||
+            !Number.isInteger(selectedYear) ||
+            !Number.isInteger(hours) ||
+            !Number.isInteger(minutes)
+        ) {
+            return null;
+        }
+
+        if (
+            selectedYear < 2000 ||
+            selectedYear > 2100 ||
+            selectedMonth < 1 ||
+            selectedMonth > 12 ||
+            day < 1 ||
+            day > 31 ||
+            hours < 0 ||
+            hours > 23 ||
+            minutes < 0 ||
+            minutes > 59
+        ) {
+            return null;
+        }
+
+        const date =
+            new Date(
+                selectedYear,
+                selectedMonth - 1,
+                day,
+                hours,
+                minutes,
+                0,
                 0
             );
 
-        const remainingAmount =
-            Math.max(
-                calculation.totalDue -
-                totalPaid,
-                0
-            );
-
-        const status =
-            remainingAmount === 0
-                ? "paid"
-                : totalPaid > 0
-                    ? "partially_paid"
-                    : "pending";
-
-        const needsUpdate =
-            Math.abs(
-                obligation.currentAmountDue -
-                calculation.totalDue
-            ) > 0.009 ||
-            Math.abs(
-                obligation.penalty -
-                calculation.penalty
-            ) > 0.009 ||
-            Math.abs(
-                obligation.paidAmount -
-                totalPaid
-            ) > 0.009 ||
-            Math.abs(
-                obligation.remainingAmount -
-                remainingAmount
-            ) > 0.009 ||
-            obligation.status !== status;
-
-        if (!needsUpdate) {
-            return obligation;
+        /*
+         * Prevent JavaScript from accepting invalid
+         * dates such as 31/02/2026.
+         */
+        if (
+            date.getFullYear() !==
+            selectedYear ||
+            date.getMonth() !==
+            selectedMonth - 1 ||
+            date.getDate() !== day ||
+            date.getHours() !== hours ||
+            date.getMinutes() !== minutes
+        ) {
+            return null;
         }
 
-        await updateMonthlyObligation(
-            obligation.id,
-            {
+        return date;
+    };
+
+    /*
+     * Rebuild the monthly obligation from actual
+     * payment records.
+     *
+     * This also repairs older records that were
+     * incorrectly calculated using today's date.
+     *
+     * For multiple payments, the latest actual
+     * payment date controls the month's current
+     * penalty. The penalty is calculated once on
+     * the full installment.
+     */
+    const reconcileMonthlyObligation =
+        async (
+            obligation: MonthlyObligation
+        ): Promise<MonthlyObligation> => {
+            const payments =
+                await getPaymentsForObligation(
+                    obligation.id
+                );
+
+            if (payments.length === 0) {
+                const needsReset =
+                    Math.abs(
+                        obligation.currentAmountDue -
+                        obligation.originalInstallment
+                    ) > 0.009 ||
+                    Math.abs(obligation.penalty) > 0.009 ||
+                    Math.abs(obligation.paidAmount) > 0.009 ||
+                    Math.abs(obligation.remainingAmount - obligation.originalInstallment) > 0.009 ||
+                    obligation.status !== "pending";
+
+                if (!needsReset) {
+                    return obligation;
+                }
+
+                await updateMonthlyObligation(
+                    obligation.id,
+                    {
+                        currentAmountDue:
+                        obligation.originalInstallment,
+                        penalty: 0,
+                        paidAmount: 0,
+                        remainingAmount:
+                        obligation.originalInstallment,
+                        status: "pending",
+                    }
+                );
+
+                return {
+                    ...obligation,
+                    currentAmountDue:
+                    obligation.originalInstallment,
+                    penalty: 0,
+                    paidAmount: 0,
+                    remainingAmount:
+                    obligation.originalInstallment,
+                    status: "pending",
+                    updatedAt:
+                        new Date().toISOString(),
+                };
+            }
+
+            const sortedPayments =
+                [...payments].sort(
+                    (a, b) =>
+                        new Date(
+                            b.paidAt
+                        ).getTime() -
+                        new Date(
+                            a.paidAt
+                        ).getTime()
+                );
+
+            const latestPayment =
+                sortedPayments[0];
+
+            const latestPaymentDate =
+                new Date(
+                    latestPayment.paidAt
+                );
+
+            const calculation =
+                calculatePaymentAmount(
+                    obligation.originalInstallment,
+                    latestPaymentDate
+                );
+
+            const totalPaid =
+                payments.reduce(
+                    (
+                        total,
+                        payment
+                    ) =>
+                        total +
+                        payment.actualCollectedAmount,
+                    0
+                );
+
+            const remainingAmount =
+                Math.max(
+                    calculation.totalDue -
+                    totalPaid,
+                    0
+                );
+
+            const status =
+                remainingAmount === 0
+                    ? "paid"
+                    : totalPaid > 0
+                        ? "partially_paid"
+                        : "pending";
+
+            const needsUpdate =
+                Math.abs(
+                    obligation.currentAmountDue -
+                    calculation.totalDue
+                ) > 0.009 ||
+                Math.abs(
+                    obligation.penalty -
+                    calculation.penalty
+                ) > 0.009 ||
+                Math.abs(
+                    obligation.paidAmount -
+                    totalPaid
+                ) > 0.009 ||
+                Math.abs(
+                    obligation.remainingAmount -
+                    remainingAmount
+                ) > 0.009 ||
+                obligation.status !==
+                status;
+
+            if (!needsUpdate) {
+                return obligation;
+            }
+
+            await updateMonthlyObligation(
+                obligation.id,
+                {
+                    currentAmountDue:
+                    calculation.totalDue,
+
+                    penalty:
+                    calculation.penalty,
+
+                    paidAmount:
+                    totalPaid,
+
+                    remainingAmount:
+                    remainingAmount,
+
+                    status:
+                    status,
+                }
+            );
+
+            return {
+                ...obligation,
+
                 currentAmountDue:
                 calculation.totalDue,
 
@@ -217,114 +430,128 @@ export default function MonthlyPaymentsScreen() {
                 remainingAmount,
 
                 status:
-                status,
-            }
-        );
 
-        return {
-            ...obligation,
-            currentAmountDue:
-            calculation.totalDue,
-            penalty:
-            calculation.penalty,
-            paidAmount:
-            totalPaid,
-            remainingAmount:
-            remainingAmount,
-            status,
-            updatedAt:
-                new Date().toISOString(),
+                status,
+
+                updatedAt:
+                    new Date().toISOString(),
+            };
         };
-    };
 
     const loadMonthlyPayments =
-        useCallback(async () => {
-            try {
-                setLoading(true);
+        useCallback(
+            async () => {
+                try {
+                    setLoading(true);
 
-                const members =
-                    await getMembers();
+                    const members =
+                        await getMembers();
 
-                const activeMembers =
-                    members.filter(
-                        (member) =>
-                            member.isActive
-                    );
-
-                const paymentRows:
-                    MemberPaymentRow[] = [];
-
-                for (
-                    const member of activeMembers
-                    ) {
-                    let obligation =
-                        await getMonthlyObligation(
-                            member.id,
-                            year,
-                            month
+                    const activeMembers =
+                        members.filter(
+                            (member) =>
+                                member.isActive
                         );
 
-                    if (!obligation) {
-                        obligation =
-                            await createMonthlyObligation(
+                    const paymentRows:
+                        MemberPaymentRow[] = [];
+
+                    for (
+                        const member of
+                        activeMembers
+                        ) {
+                        /*
+                         * Resolve the installment that applies
+                         * to this specific calendar month.
+                         *
+                         * A changed installment is scheduled
+                         * from the next month, while an already
+                         * created historical/current obligation
+                         * remains unchanged.
+                         */
+                        const installmentForMonth =
+                            await getInstallmentForMonth(
                                 member.id,
                                 year,
-                                month,
-                                member.monthlyInstallment
+                                month
                             );
+
+                        let obligation =
+                            await getMonthlyObligation(
+                                member.id,
+                                year,
+                                month
+                            );
+
+                        if (!obligation) {
+                            obligation =
+                                await createMonthlyObligation(
+                                    member.id,
+                                    year,
+                                    month,
+                                    installmentForMonth
+                                );
+                        }
+
+                        /*
+                         * Repair/reconcile existing
+                         * payment data before displaying it.
+                         */
+                        obligation =
+                            await reconcileMonthlyObligation(
+                                obligation
+                            );
+
+                        paymentRows.push({
+                            member,
+                            obligation,
+                        });
                     }
 
-                    /*
-                     * Always reconcile an existing obligation against
-                     * its real payment dates before displaying it.
-                     *
-                     * This repairs old data such as:
-                     * installment ₹1000
-                     * payment date 14th
-                     * stored due ₹1200
-                     *
-                     * and changes it back to:
-                     * due ₹1000 / penalty ₹0.
-                     */
-                    obligation =
-                        await reconcileMonthlyObligation(
-                            obligation
-                        );
+                    setRows(
+                        paymentRows
+                    );
+                } catch (error) {
+                    console.error(
+                        "Load monthly payments error:",
+                        error
+                    );
 
-                    paymentRows.push({
-                        member,
-                        obligation,
-                    });
+                    Alert.alert(
+                        "Error",
+                        "Unable to load monthly payments."
+                    );
+                } finally {
+                    setLoading(false);
                 }
-
-                setRows(paymentRows);
-            } catch (error) {
-                console.error(
-                    "Load monthly payments error:",
-                    error
-                );
-
-                Alert.alert(
-                    "Error",
-                    "Unable to load monthly payments."
-                );
-            } finally {
-                setLoading(false);
-            }
-        }, [year, month]);
+            },
+            [year, month]
+        );
 
     useFocusEffect(
-        useCallback(() => {
-            loadMonthlyPayments();
-        }, [loadMonthlyPayments])
+        useCallback(
+            () => {
+                loadMonthlyPayments();
+            },
+            [loadMonthlyPayments]
+        )
     );
 
+    /*
+     * Open the payment form.
+     *
+     * IMPORTANT:
+     * The payment date is editable BEFORE saving.
+     * The default is today, but the admin can enter
+     * the real date the member actually paid.
+     */
     const openPaymentDialog = async (
         row: MemberPaymentRow
     ) => {
         try {
             if (
-                row.obligation.status === "paid"
+                row.obligation.status ===
+                "paid"
             ) {
                 Alert.alert(
                     "Already Paid",
@@ -334,14 +561,6 @@ export default function MonthlyPaymentsScreen() {
                 return;
             }
 
-            /*
-             * IMPORTANT:
-             * Use the obligation's already-calculated
-             * amount instead of recalculating from
-             * today's date.
-             *
-             * This preserves an edited payment date.
-             */
             const totalDue =
                 row.obligation.currentAmountDue;
 
@@ -352,11 +571,14 @@ export default function MonthlyPaymentsScreen() {
 
             const remainingAmount =
                 Math.max(
-                    totalDue - paidAmount,
+                    totalDue -
+                    paidAmount,
                     0
                 );
 
-            if (remainingAmount <= 0) {
+            if (
+                remainingAmount <= 0
+            ) {
                 await updateMonthlyObligation(
                     row.obligation.id,
                     {
@@ -369,9 +591,11 @@ export default function MonthlyPaymentsScreen() {
                         paidAmount:
                         totalDue,
 
-                        remainingAmount: 0,
+                        remainingAmount:
+                            0,
 
-                        status: "paid",
+                        status:
+                            "paid",
                     }
                 );
 
@@ -380,13 +604,35 @@ export default function MonthlyPaymentsScreen() {
                 return;
             }
 
+            const now =
+                new Date();
+
             setSelectedRow(row);
 
             setPaymentAmount(
-                remainingAmount.toFixed(2)
+                remainingAmount.toFixed(
+                    2
+                )
             );
 
-            setPaymentModalVisible(true);
+            setPaymentDate(
+                formatDateForInput(
+                    now
+                )
+            );
+
+            setPaymentTime(
+                formatTimeForInput(
+                    now
+                )
+            );
+
+            setManualOverride(false);
+            setOverrideReason("");
+
+            setPaymentModalVisible(
+                true
+            );
         } catch (error) {
             console.error(
                 "Open payment dialog error:",
@@ -401,222 +647,430 @@ export default function MonthlyPaymentsScreen() {
     };
 
     const closePaymentDialog = () => {
-        setPaymentModalVisible(false);
+        setPaymentModalVisible(
+            false
+        );
+
         setSelectedRow(null);
+
         setPaymentAmount("");
+
+        setPaymentDate("");
+
+        setPaymentTime("");
     };
 
-    const confirmPayment = async () => {
-        if (!selectedRow) {
-            return;
-        }
-
-        const amount =
-            Number(paymentAmount);
-
-        if (
-            !Number.isFinite(amount) ||
-            amount <= 0
-        ) {
-            Alert.alert(
-                "Invalid Amount",
-                "Please enter a valid payment amount."
-            );
-
-            return;
-        }
-
+    /**
+     * Reverse the latest payment when the admin
+     * accidentally marked an obligation as fully paid.
+     *
+     * Only the latest payment is removed. If other
+     * partial payments exist, they remain untouched and
+     * the obligation becomes partially paid again.
+     */
+    const handlePaidPress = async (
+        row: MemberPaymentRow
+    ) => {
         try {
-            const {
-                member,
-                obligation,
-            } = selectedRow;
-
-            /*
-             * IMPORTANT:
-             * Do NOT calculate penalty using today's date.
-             *
-             * The obligation already contains the
-             * correct calculated amount, including
-             * any edited payment-date calculation.
-             */
-            const totalDue =
-                obligation.currentAmountDue;
-
-            const alreadyPaid =
-                await getTotalPaidForObligation(
-                    obligation.id
+            const payments =
+                await getPaymentsForObligation(
+                    row.obligation.id
                 );
 
-            const remainingBeforePayment =
-                Math.max(
-                    totalDue - alreadyPaid,
-                    0
-                );
-
-            if (
-                amount >
-                remainingBeforePayment
-            ) {
-                Alert.alert(
-                    "Amount Too High",
-                    `Maximum amount that can be collected now is ₹${remainingBeforePayment.toFixed(
-                        2
-                    )}.`
-                );
-
+            if (payments.length === 0) {
+                await loadMonthlyPayments();
                 return;
             }
 
-            const newPaidAmount =
-                alreadyPaid + amount;
-
-            const newRemainingAmount =
-                Math.max(
-                    totalDue -
-                    newPaidAmount,
-                    0
+            const sortedPayments =
+                [...payments].sort(
+                    (a, b) =>
+                        new Date(b.paidAt).getTime() -
+                        new Date(a.paidAt).getTime()
                 );
 
-            const newStatus =
-                newRemainingAmount === 0
-                    ? "paid"
-                    : "partially_paid";
+            const latestPayment =
+                sortedPayments[0];
 
             Alert.alert(
-                "Confirm Payment",
-                `Member: ${member.name}\n\n` +
-                `Total due: ₹${totalDue.toFixed(
-                    2
-                )}\n` +
-                `Already paid: ₹${alreadyPaid.toFixed(
-                    2
-                )}\n` +
-                `This payment: ₹${amount.toFixed(
-                    2
-                )}\n` +
-                `Remaining: ₹${newRemainingAmount.toFixed(
-                    2
-                )}`,
+                "Move Payment Back to Pending?",
+                `The latest payment of ₹${latestPayment.actualCollectedAmount.toFixed(2)} for ${row.member.name} will be reversed.
+
+This will remove that payment record and recalculate the monthly status.`,
                 [
                     {
                         text: "Cancel",
                         style: "cancel",
                     },
                     {
-                        text: "Confirm",
+                        text: "Reverse Payment",
+                        style: "destructive",
                         onPress: async () => {
-                            await savePayment(
-                                selectedRow,
-                                amount,
-                                newPaidAmount,
-                                newRemainingAmount,
-                                newStatus
-                            );
+                            try {
+                                await deletePayment(
+                                    latestPayment.id
+                                );
+
+                                const remainingPayments =
+                                    await getPaymentsForObligation(
+                                        row.obligation.id
+                                    );
+
+                                if (
+                                    remainingPayments.length ===
+                                    0
+                                ) {
+                                    await updateMonthlyObligation(
+                                        row.obligation.id,
+                                        {
+                                            currentAmountDue:
+                                            row.obligation.originalInstallment,
+                                            penalty: 0,
+                                            paidAmount: 0,
+                                            remainingAmount:
+                                            row.obligation.originalInstallment,
+                                            status: "pending",
+                                        }
+                                    );
+                                } else {
+                                    await reconcileMonthlyObligation(
+                                        row.obligation
+                                    );
+                                }
+
+                                await loadMonthlyPayments();
+
+                                Alert.alert(
+                                    "Payment Reversed",
+                                    `${row.member.name}'s latest payment has been moved back to Pending.`
+                                );
+                            } catch (error) {
+                                console.error(
+                                    "Reverse payment error:",
+                                    error
+                                );
+
+                                Alert.alert(
+                                    "Error",
+                                    "Unable to reverse the payment."
+                                );
+                            }
                         },
                     },
                 ]
             );
         } catch (error) {
             console.error(
-                "Confirm payment error:",
+                "Prepare payment reversal error:",
                 error
             );
 
             Alert.alert(
                 "Error",
-                "Unable to process the payment."
+                "Unable to prepare the payment reversal."
             );
         }
     };
 
+    /*
+     * Calculate what the selected payment date
+     * means for the current monthly obligation.
+     */
+    const getSelectedPaymentCalculation =
+        () => {
+            if (!selectedRow) {
+                return null;
+            }
 
-    const savePayment = async (
-        row: MemberPaymentRow,
-        amount: number,
-        newPaidAmount: number,
-        newRemainingAmount: number,
-        newStatus:
-            | "paid"
-            | "partially_paid"
-    ) => {
-        try {
-            await addPayment({
-                obligationId:
-                row.obligation.id,
+            const selectedDate =
+                parsePaymentDateTime();
 
-                memberId:
-                row.member.id,
+            if (!selectedDate) {
+                return null;
+            }
 
-                year:
-                row.obligation.year,
+            return calculatePaymentAmount(
+                selectedRow.obligation
+                    .originalInstallment,
+                selectedDate
+            );
+        };
 
-                month:
-                row.obligation.month,
+    const confirmPayment =
+        async () => {
+            if (!selectedRow) {
+                return;
+            }
 
-                calculatedAmount:
-                row.obligation.currentAmountDue,
+            const amount = Number(paymentAmount);
 
-                calculatedPenalty:
-                row.obligation.penalty,
+            if (!Number.isFinite(amount) || amount <= 0) {
+                Alert.alert(
+                    "Invalid Amount",
+                    "Please enter a valid payment amount."
+                );
+                return;
+            }
 
-                actualCollectedAmount:
-                amount,
+            const selectedDate = parsePaymentDateTime();
 
-                isManualOverride:
-                    false,
+            if (!selectedDate) {
+                Alert.alert(
+                    "Invalid Payment Date",
+                    "Please enter a valid date and time.\\n\\nDate: DD/MM/YYYY\\nTime: HH:MM"
+                );
+                return;
+            }
 
-                paidAt:
-                    new Date().toISOString(),
-            });
+            if (manualOverride && !overrideReason.trim()) {
+                Alert.alert(
+                    "Reason Required",
+                    "Please enter a reason for the manual amount override."
+                );
+                return;
+            }
 
-            await updateMonthlyObligation(
-                row.obligation.id,
-                {
-                    currentAmountDue:
-                    row.obligation.currentAmountDue,
+            try {
+                const { member, obligation } = selectedRow;
 
-                    penalty:
-                    row.obligation.penalty,
+                const calculation = calculatePaymentAmount(
+                    obligation.originalInstallment,
+                    selectedDate
+                );
 
-                    paidAmount:
-                    newPaidAmount,
+                const alreadyPaid =
+                    await getTotalPaidForObligation(obligation.id);
 
-                    remainingAmount:
-                    newRemainingAmount,
+                const totalDue = calculation.totalDue;
 
-                    status:
-                    newStatus,
+                const remainingBeforePayment = Math.max(
+                    totalDue - alreadyPaid,
+                    0
+                );
+
+                if (amount > remainingBeforePayment) {
+                    Alert.alert(
+                        "Amount Too High",
+                        `Maximum amount that can be collected now is ₹${remainingBeforePayment.toFixed(2)}.`
+                    );
+                    return;
                 }
-            );
 
-            closePaymentDialog();
+                const newPaidAmount = alreadyPaid + amount;
+                const newRemainingAmount = Math.max(
+                    totalDue - newPaidAmount,
+                    0
+                );
 
-            Alert.alert(
-                "Payment Recorded",
-                `₹${amount.toFixed(
-                    2
-                )} collected from ${row.member.name}.`,
-                [
+                const newStatus =
+                    newRemainingAmount === 0
+                        ? "paid"
+                        : "partially_paid";
+
+                const cleanedOverrideReason = overrideReason.trim();
+
+                Alert.alert(
+                    "Confirm Payment",
+                    `Member: ${member.name}\\n\\n` +
+                    `Payment date: ${selectedDate.toLocaleDateString()}\\n` +
+                    `Payment time: ${selectedDate.toLocaleTimeString()}\\n\\n` +
+                    `Original installment: ₹${obligation.originalInstallment.toFixed(2)}\\n` +
+                    `Calculated penalty: ₹${calculation.penalty.toFixed(2)}\\n` +
+                    `Calculated total due: ₹${totalDue.toFixed(2)}\\n` +
+                    `Already paid: ₹${alreadyPaid.toFixed(2)}\\n` +
+                    `Actual amount collected: ₹${amount.toFixed(2)}\\n` +
+                    `Remaining: ₹${newRemainingAmount.toFixed(2)}\\n\\n` +
+                    (manualOverride
+                        ? `Manual override: YES\\nReason: ${cleanedOverrideReason}`
+                        : "Manual override: NO"),
+                    [
+                        {
+                            text: "Cancel",
+                            style: "cancel",
+                        },
+                        {
+                            text: "Confirm",
+                            onPress: async () => {
+                                await savePayment(
+                                    selectedRow,
+                                    amount,
+                                    selectedDate,
+                                    newPaidAmount,
+                                    newRemainingAmount,
+                                    newStatus,
+                                    calculation.totalDue,
+                                    calculation.penalty,
+                                    manualOverride,
+                                    manualOverride
+                                        ? cleanedOverrideReason
+                                        : undefined
+                                );
+                            },
+                        },
+                    ]
+                );
+            } catch (error) {
+                console.error(
+                    "Confirm payment error:",
+                    error
+                );
+
+                Alert.alert(
+                    "Error",
+                    "Unable to process the payment."
+                );
+            }
+        };
+
+    const savePayment =
+        async (
+            row: MemberPaymentRow,
+            amount: number,
+            selectedDate: Date,
+            newPaidAmount: number,
+            newRemainingAmount: number,
+            newStatus:
+                | "paid"
+                | "partially_paid",
+            calculatedAmount: number,
+            calculatedPenalty: number,
+            isManualOverride: boolean,
+            overrideReason?: string
+        ) => {
+            try {
+                await addPayment({
+                    obligationId:
+                    row.obligation.id,
+
+                    memberId:
+                    row.member.id,
+
+                    year:
+                    row.obligation.year,
+
+                    month:
+                    row.obligation.month,
+
+                    calculatedAmount:
+                    calculatedAmount,
+
+                    calculatedPenalty:
+                    calculatedPenalty,
+
+                    actualCollectedAmount:
+                    amount,
+
+                    isManualOverride:
+                    isManualOverride,
+
+                    overrideReason:
+                    overrideReason,
+
+                    /*
+                     * IMPORTANT:
+                     * Save the actual payment date
+                     * selected by the admin.
+                     *
+                     * This is NOT necessarily today.
+                     */
+                    paidAt:
+                        selectedDate.toISOString(),
+                });
+
+                /*
+                 * Save the amount calculated from
+                 * the selected payment date.
+                 */
+                await updateMonthlyObligation(
+                    row.obligation.id,
                     {
-                        text: "OK",
-                        onPress:
-                        loadMonthlyPayments,
-                    },
-                ]
-            );
-        } catch (error) {
-            console.error(
-                "Save payment error:",
-                error
-            );
+                        currentAmountDue:
+                        calculatedAmount,
 
-            Alert.alert(
-                "Error",
-                "Unable to save the payment."
-            );
-        }
-    };
+                        penalty:
+                        calculatedPenalty,
+
+                        paidAmount:
+                        newPaidAmount,
+
+                        remainingAmount:
+                        newRemainingAmount,
+
+                        status:
+                        newStatus,
+                    }
+                );
+
+                /*
+                 * Reconcile once more from the
+                 * stored payment records so the
+                 * monthly obligation always matches
+                 * the real payment history.
+                 */
+                const refreshedPayments =
+                    await getPaymentsForObligation(
+                        row.obligation.id
+                    );
+
+                await reconcileMonthlyObligation(
+                    {
+                        ...row.obligation,
+
+                        currentAmountDue:
+                        calculatedAmount,
+
+                        penalty:
+                        calculatedPenalty,
+
+                        paidAmount:
+                        newPaidAmount,
+
+                        remainingAmount:
+                        newRemainingAmount,
+
+                        status:
+                        newStatus,
+                    }
+                );
+
+                /*
+                 * Keep the variable above intentionally
+                 * read so the save sequence is explicit:
+                 * payment -> obligation -> reconciliation.
+                 */
+                void refreshedPayments;
+
+                closePaymentDialog();
+
+                Alert.alert(
+                    "Payment Recorded",
+                    `₹${amount.toFixed(
+                        2
+                    )} collected from ${row.member.name}.\n\n` +
+                    `Payment date: ${selectedDate.toLocaleDateString()}\n` +
+                    `Penalty: ₹${calculatedPenalty.toFixed(
+                        2
+                    )}`,
+                    [
+                        {
+                            text: "OK",
+                            onPress:
+                            loadMonthlyPayments,
+                        },
+                    ]
+                );
+            } catch (error) {
+                console.error(
+                    "Save payment error:",
+                    error
+                );
+
+                Alert.alert(
+                    "Error",
+                    "Unable to save the payment."
+                );
+            }
+        };
 
     const paidCount =
         rows.filter(
@@ -654,6 +1108,9 @@ export default function MonthlyPaymentsScreen() {
         );
     }
 
+    const selectedCalculation =
+        getSelectedPaymentCalculation();
+
     return (
         <KeyboardAvoidingView
             style={styles.container}
@@ -685,7 +1142,9 @@ export default function MonthlyPaymentsScreen() {
                     </TouchableOpacity>
 
                     <Text
-                        style={styles.title}
+                        style={
+                            styles.title
+                        }
                     >
                         Monthly Payments
                     </Text>
@@ -796,7 +1255,9 @@ export default function MonthlyPaymentsScreen() {
                         </Text>
                     </View>
                 ) : (
-                    <View style={styles.list}>
+                    <View
+                        style={styles.list}
+                    >
                         {rows.map(
                             ({
                                  member,
@@ -941,17 +1402,17 @@ export default function MonthlyPaymentsScreen() {
                                                 ? styles.paidButton
                                                 : styles.doneButton
                                         }
-                                        disabled={
+                                        onPress={() =>
                                             obligation.status ===
                                             "paid"
-                                        }
-                                        onPress={() =>
-                                            openPaymentDialog(
-                                                {
+                                                ? handlePaidPress({
                                                     member,
                                                     obligation,
-                                                }
-                                            )
+                                                })
+                                                : openPaymentDialog({
+                                                    member,
+                                                    obligation,
+                                                })
                                         }
                                     >
                                         <Text
@@ -973,118 +1434,300 @@ export default function MonthlyPaymentsScreen() {
                     </View>
                 )}
 
-                {paymentModalVisible &&
-                    selectedRow && (
-                        <View
-                            style={
-                                styles.paymentPanel
-                            }
-                        >
-                            <Text
-                                style={
-                                    styles.panelTitle
+                {selectedRow && (
+                    <Modal
+                        visible={paymentModalVisible}
+                        transparent
+                        animationType="fade"
+                        onRequestClose={closePaymentDialog}
+                    >
+                        <View style={styles.modalOverlay}>
+                            <KeyboardAvoidingView
+                                style={styles.modalKeyboardContainer}
+                                behavior={
+                                    Platform.OS === "ios"
+                                        ? "padding"
+                                        : undefined
                                 }
                             >
-                                Record Payment
-                            </Text>
-
-                            <Text
-                                style={
-                                    styles.panelMember
-                                }
-                            >
-                                {
-                                    selectedRow
-                                        .member
-                                        .name
-                                }
-                            </Text>
-
-                            <Text
-                                style={
-                                    styles.panelInfo
-                                }
-                            >
-                                Total due: ₹
-                                {selectedRow.obligation.currentAmountDue.toFixed(
-                                    2
-                                )}
-                            </Text>
-
-                            <Text
-                                style={
-                                    styles.panelInfo
-                                }
-                            >
-                                Already paid: ₹
-                                {selectedRow.obligation.paidAmount.toFixed(
-                                    2
-                                )}
-                            </Text>
-
-                            <Text
-                                style={
-                                    styles.inputLabel
-                                }
-                            >
-                                Amount to collect
-                            </Text>
-
-                            <TextInput
-                                style={
-                                    styles.amountInput
-                                }
-                                value={
-                                    paymentAmount
-                                }
-                                onChangeText={
-                                    setPaymentAmount
-                                }
-                                keyboardType="decimal-pad"
-                                placeholder="Enter amount"
-                            />
-
-                            <View
-                                style={
-                                    styles.panelButtons
-                                }
-                            >
-                                <TouchableOpacity
-                                    style={
-                                        styles.cancelButton
-                                    }
-                                    onPress={
-                                        closePaymentDialog
-                                    }
-                                >
-                                    <Text
-                                        style={
-                                            styles.cancelButtonText
+                                <View style={styles.paymentPanel}>
+                                    <ScrollView
+                                        style={styles.modalScroll}
+                                        contentContainerStyle={
+                                            styles.modalScrollContent
                                         }
+                                        keyboardShouldPersistTaps="handled"
+                                        showsVerticalScrollIndicator={false}
                                     >
-                                        Cancel
-                                    </Text>
-                                </TouchableOpacity>
+                                        <Text
+                                            style={
+                                                styles.panelTitle
+                                            }
+                                        >
+                                            Record Payment
+                                        </Text>
 
-                                <TouchableOpacity
-                                    style={
-                                        styles.confirmButton
-                                    }
-                                    onPress={
-                                        confirmPayment
-                                    }
-                                >
-                                    <Text
-                                        style={
-                                            styles.confirmButtonText
-                                        }
-                                    >
-                                        Confirm
-                                    </Text>
-                                </TouchableOpacity>
-                            </View>
+                                        <Text
+                                            style={
+                                                styles.panelMember
+                                            }
+                                        >
+                                            {
+                                                selectedRow
+                                                    .member
+                                                    .name
+                                            }
+                                        </Text>
+
+                                        <Text
+                                            style={
+                                                styles.panelInfo
+                                            }
+                                        >
+                                            Original installment:
+                                            {" "}
+                                            ₹
+                                            {selectedRow.obligation.originalInstallment.toFixed(
+                                                2
+                                            )}
+                                        </Text>
+
+                                        <Text
+                                            style={
+                                                styles.inputLabel
+                                            }
+                                        >
+                                            Payment Date
+                                            {" "}
+                                            (DD/MM/YYYY)
+                                        </Text>
+
+                                        <TextInput
+                                            style={
+                                                styles.amountInput
+                                            }
+                                            value={
+                                                paymentDate
+                                            }
+                                            onChangeText={
+                                                setPaymentDate
+                                            }
+                                            placeholder="14/09/2026"
+                                            keyboardType="numbers-and-punctuation"
+                                            maxLength={10}
+                                        />
+
+                                        <Text
+                                            style={
+                                                styles.inputLabel
+                                            }
+                                        >
+                                            Payment Time
+                                            {" "}
+                                            (HH:MM)
+                                        </Text>
+
+                                        <TextInput
+                                            style={
+                                                styles.amountInput
+                                            }
+                                            value={
+                                                paymentTime
+                                            }
+                                            onChangeText={
+                                                setPaymentTime
+                                            }
+                                            placeholder="19:30"
+                                            keyboardType="numbers-and-punctuation"
+                                            maxLength={5}
+                                        />
+
+                                        {selectedCalculation ? (
+                                            <View
+                                                style={
+                                                    styles.calculationBox
+                                                }
+                                            >
+                                                <Text
+                                                    style={
+                                                        styles.calculationTitle
+                                                    }
+                                                >
+                                                    Calculation
+                                                </Text>
+
+                                                <Text
+                                                    style={
+                                                        styles.panelInfo
+                                                    }
+                                                >
+                                                    Penalty:
+                                                    {" "}
+                                                    ₹
+                                                    {selectedCalculation.penalty.toFixed(
+                                                        2
+                                                    )}
+                                                </Text>
+
+                                                <Text
+                                                    style={
+                                                        styles.panelInfo
+                                                    }
+                                                >
+                                                    Total due:
+                                                    {" "}
+                                                    ₹
+                                                    {selectedCalculation.totalDue.toFixed(
+                                                        2
+                                                    )}
+                                                </Text>
+                                            </View>
+                                        ) : (
+                                            <Text
+                                                style={
+                                                    styles.invalidDateText
+                                                }
+                                            >
+                                                Enter a valid payment
+                                                date and time to see
+                                                the calculation.
+                                            </Text>
+                                        )}
+
+                                        <Text
+                                            style={
+                                                styles.inputLabel
+                                            }
+                                        >
+                                            Amount to collect
+                                        </Text>
+
+                                        <TextInput
+                                            style={
+                                                styles.amountInput
+                                            }
+                                            value={
+                                                paymentAmount
+                                            }
+                                            onChangeText={
+                                                setPaymentAmount
+                                            }
+                                            keyboardType="decimal-pad"
+                                            placeholder="Enter amount"
+                                        />
+
+                                        <View
+                                            style={
+                                                styles.overrideRow
+                                            }
+                                        >
+                                            <View
+                                                style={
+                                                    styles.overrideTextContainer
+                                                }
+                                            >
+                                                <Text
+                                                    style={
+                                                        styles.overrideTitle
+                                                    }
+                                                >
+                                                    Manual amount override
+                                                </Text>
+
+                                                <Text
+                                                    style={
+                                                        styles.overrideDescription
+                                                    }
+                                                >
+                                                    Turn this on only when the actual
+                                                    collected amount intentionally differs
+                                                    from the calculated amount.
+                                                </Text>
+                                            </View>
+
+                                            <Switch
+                                                value={manualOverride}
+                                                onValueChange={(value) => {
+                                                    setManualOverride(value);
+
+                                                    if (!value) {
+                                                        setOverrideReason("");
+                                                    }
+                                                }}
+                                            />
+                                        </View>
+
+                                        {manualOverride && (
+                                            <>
+                                                <Text
+                                                    style={
+                                                        styles.inputLabel
+                                                    }
+                                                >
+                                                    Override Reason *
+                                                </Text>
+
+                                                <TextInput
+                                                    style={
+                                                        styles.reasonInput
+                                                    }
+                                                    value={overrideReason}
+                                                    onChangeText={
+                                                        setOverrideReason
+                                                    }
+                                                    placeholder="Enter reason for changing the amount"
+                                                    multiline
+                                                    textAlignVertical="top"
+                                                />
+                                            </>
+                                        )}
+
+                                        <View
+                                            style={
+                                                styles.panelButtons
+                                            }
+                                        >
+                                            <TouchableOpacity
+                                                style={
+                                                    styles.cancelButton
+                                                }
+                                                onPress={
+                                                    closePaymentDialog
+                                                }
+                                            >
+                                                <Text
+                                                    style={
+                                                        styles.cancelButtonText
+                                                    }
+                                                >
+                                                    Cancel
+                                                </Text>
+                                            </TouchableOpacity>
+
+                                            <TouchableOpacity
+                                                style={
+                                                    styles.confirmButton
+                                                }
+                                                onPress={
+                                                    confirmPayment
+                                                }
+                                            >
+                                                <Text
+                                                    style={
+                                                        styles.confirmButtonText
+                                                    }
+                                                >
+                                                    Confirm
+                                                </Text>
+                                            </TouchableOpacity>
+                                        </View>
+
+                                    </ScrollView>
+                                </View>
+                            </KeyboardAvoidingView>
                         </View>
-                    )}
+                    </Modal>
+                )}
             </ScrollView>
         </KeyboardAvoidingView>
     );
@@ -1269,11 +1912,33 @@ const styles = StyleSheet.create({
         color: "#666",
     },
 
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: "rgba(0, 0, 0, 0.45)",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: 20,
+    },
+
+    modalKeyboardContainer: {
+        width: "100%",
+        maxHeight: "90%",
+    },
+
     paymentPanel: {
-        marginTop: 20,
+        width: "100%",
         backgroundColor: "#FFFFFF",
         borderRadius: 16,
         padding: 18,
+        overflow: "hidden",
+    },
+
+    modalScroll: {
+        width: "100%",
+    },
+
+    modalScrollContent: {
+        paddingBottom: 4,
     },
 
     panelTitle: {
@@ -1293,6 +1958,24 @@ const styles = StyleSheet.create({
         color: "#555",
     },
 
+    calculationBox: {
+        marginTop: 16,
+        padding: 12,
+        borderRadius: 10,
+        backgroundColor: "#F2F2F2",
+    },
+
+    calculationTitle: {
+        fontSize: 14,
+        fontWeight: "700",
+    },
+
+    invalidDateText: {
+        marginTop: 12,
+        fontSize: 13,
+        color: "#B00020",
+    },
+
     inputLabel: {
         marginTop: 18,
         marginBottom: 7,
@@ -1307,6 +1990,44 @@ const styles = StyleSheet.create({
         paddingHorizontal: 14,
         paddingVertical: 12,
         fontSize: 17,
+        backgroundColor: "#FAFAFA",
+    },
+
+    overrideRow: {
+        marginTop: 16,
+        padding: 12,
+        borderRadius: 10,
+        backgroundColor: "#F2F2F2",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+    },
+
+    overrideTextContainer: {
+        flex: 1,
+    },
+
+    overrideTitle: {
+        fontSize: 14,
+        fontWeight: "700",
+    },
+
+    overrideDescription: {
+        marginTop: 4,
+        fontSize: 12,
+        lineHeight: 17,
+        color: "#666",
+    },
+
+    reasonInput: {
+        minHeight: 80,
+        borderWidth: 1,
+        borderColor: "#D5D5D5",
+        borderRadius: 10,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        fontSize: 15,
         backgroundColor: "#FAFAFA",
     },
 
