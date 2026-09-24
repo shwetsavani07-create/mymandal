@@ -37,6 +37,8 @@ type RootStackParamList = {
     AddMember: undefined;
     MonthlyPayments: undefined;
     History: undefined;
+    Reports: undefined;
+    Export: undefined;
 };
 
 type HomeScreenNavigationProp =
@@ -588,6 +590,40 @@ export default function HomeScreen() {
                     }
                 >
                     History
+                </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+                style={styles.navigationButton}
+                onPress={() =>
+                    navigation.navigate(
+                        "Reports"
+                    )
+                }
+            >
+                <Text
+                    style={
+                        styles.navigationText
+                    }
+                >
+                    Reports
+                </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+                style={styles.navigationButton}
+                onPress={() =>
+                    navigation.navigate(
+                        "Export"
+                    )
+                }
+            >
+                <Text
+                    style={
+                        styles.navigationText
+                    }
+                >
+                    Export
                 </Text>
             </TouchableOpacity>
         </ScrollView>
